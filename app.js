@@ -4,8 +4,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // CONFIGURAZIONE — sostituisci con i tuoi valori
 // (Supabase Dashboard > Project Settings > API)
 // =========================================
-const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
-const SUPABASE_ANON_KEY = "YOUR-ANON-PUBLIC-KEY";
+const SUPABASE_URL = "https://tytgiggvnzvxseszcavu.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_Aau3K5trdEpIRPcJ-AhMew_Du3lS3YX";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
