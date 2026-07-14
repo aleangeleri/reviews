@@ -4,8 +4,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // CONFIGURAZIONE — sostituisci con i tuoi valori
 // (Supabase Dashboard > Project Settings > API)
 // =========================================
-const SUPABASE_URL = "https://tytgiggvnzvxseszcavu.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_Aau3K5trdEpIRPcJ-AhMew_Du3lS3YX";
+const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
+const SUPABASE_ANON_KEY = "YOUR-ANON-PUBLIC-KEY";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -36,6 +36,8 @@ async function fetchState() {
     cover: r.cover,
     photos: r.photos || [],
     description: r.description,
+    lat: r.lat,
+    lng: r.lng,
     scores: {
       location: r.score_location,
       service: r.score_service,
@@ -107,6 +109,11 @@ async function render() {
 
   if (route === "admin") {
     await renderAdmin();
+    return;
+  }
+
+  if (route === "mappa") {
+    renderMap();
     return;
   }
 
@@ -210,6 +217,65 @@ function renderRestaurantCard(restaurant, locationId) {
       </div>
     </a>
   `;
+}
+
+let leafletMapInstance = null;
+
+async function renderMap() {
+  const withCoords = state.restaurants.filter(
+    (r) => Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lng)),
+  );
+
+  app.innerHTML = `
+    <section>
+      <div class="section-head">
+        <div>
+          <h2>Mappa</h2>
+          <p>Tutti i posti recensiti, uno accanto all'altro. Clicca un'icona per aprire la recensione.</p>
+        </div>
+      </div>
+      ${
+        withCoords.length
+          ? `<div id="map" style="height: min(70vh, 640px); border-radius: 8px; overflow: hidden; border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(36,29,20,0.06);"></div>`
+          : `<section class="empty-state"><p>Nessun posto ha ancora coordinate salvate. Aggiungile dal portale admin.</p></section>`
+      }
+    </section>
+  `;
+
+  if (!withCoords.length) return;
+
+  // Leaflet viene caricato al bisogno, solo su questa pagina
+  const L = await import("https://esm.sh/leaflet@1.9.4");
+
+  if (leafletMapInstance) {
+    leafletMapInstance.remove();
+    leafletMapInstance = null;
+  }
+
+  const map = L.map("map");
+  leafletMapInstance = map;
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 19,
+  }).addTo(map);
+
+  const markers = withCoords.map((restaurant) => {
+    const marker = L.marker([Number(restaurant.lat), Number(restaurant.lng)]).addTo(map);
+    marker.bindPopup(`
+      <strong>${escapeHtml(restaurant.name)}</strong><br>
+      ${escapeHtml(restaurant.address || "")}<br>
+      Media ${formatScore(averageScore(restaurant))}/10<br>
+      <a href="#/ristorante/${restaurant.locationId}/${restaurant.id}">Apri recensione</a>
+    `);
+    return marker;
+  });
+
+  if (markers.length === 1) {
+    map.setView(markers[0].getLatLng(), 14);
+  } else {
+    map.fitBounds(L.featureGroup(markers).getBounds().pad(0.2));
+  }
 }
 
 function renderRestaurant(locationId, restaurantId) {
@@ -354,6 +420,10 @@ async function renderAdmin() {
               <label for="restaurant-description">Breve descrizione</label>
               <textarea id="restaurant-description" required></textarea>
             </div>
+            <div class="field">
+              <label for="restaurant-coords">Coordinate mappa</label>
+              <input id="restaurant-coords" placeholder="Lascia vuoto: le trovo io dall'indirizzo">
+            </div>
             <div class="form-row">
               ${renderScoreInput("Location", "score-location")}
               ${renderScoreInput("Servizio", "score-service")}
@@ -488,6 +558,30 @@ async function uploadToStorage(file) {
   return data.publicUrl;
 }
 
+// =========================================
+// Geocodifica indirizzo -> coordinate (Nominatim/OpenStreetMap, gratis)
+// =========================================
+async function geocodeAddress(address) {
+  if (!address) return null;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address)}`;
+    const response = await fetch(url);
+    const results = await response.json();
+    if (!results.length) return null;
+    return { lat: Number(results[0].lat), lng: Number(results[0].lon) };
+  } catch (error) {
+    console.error("Errore geocodifica:", error);
+    return null;
+  }
+}
+
+function parseManualCoords(value) {
+  const match = value.trim().match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
+  if (!match) return null;
+  return { lat: Number(match[1]), lng: Number(match[3]) };
+}
+
 function bindAdminEvents() {
   document.querySelector("#logout")?.addEventListener("click", async () => {
     await supabase.auth.signOut();
@@ -545,17 +639,33 @@ function bindAdminEvents() {
       .value.split("\n")
       .map((value) => value.trim())
       .filter(Boolean);
+    const address = form.querySelector("#restaurant-address").value.trim();
+    const coordsInput = form.querySelector("#restaurant-coords").value.trim();
+
+    const submitButton = form.querySelector("button[type=submit]");
+    submitButton.disabled = true;
+    submitButton.textContent = "Salvataggio...";
+
+    const coords = parseManualCoords(coordsInput) || (await geocodeAddress(address));
+
+    if (!coords) {
+      alert(
+        "Non sono riuscito a trovare le coordinate per questo indirizzo. Il posto verrà salvato ma non comparirà sulla mappa; puoi modificarlo in seguito inserendo 'lat,lng' a mano.",
+      );
+    }
 
     const { error } = await supabase.from("restaurants").insert({
       id: uniqueId(name, state.restaurants),
       location_id: form.querySelector("#restaurant-location").value,
       name,
-      address: form.querySelector("#restaurant-address").value.trim(),
+      address,
       cover:
         form.querySelector("#restaurant-cover").value.trim() ||
         "https://images.unsplash.com/photo-1514933651103-005eec06c04b?auto=format&fit=crop&w=1400&q=80",
       photos,
       description: form.querySelector("#restaurant-description").value.trim(),
+      lat: coords?.lat ?? null,
+      lng: coords?.lng ?? null,
       score_location: Number(form.querySelector("#score-location").value),
       score_service: Number(form.querySelector("#score-service").value),
       score_menu: Number(form.querySelector("#score-menu").value),
@@ -565,6 +675,8 @@ function bindAdminEvents() {
     if (error) {
       alert("Errore salvando il posto.");
       console.error(error);
+      submitButton.disabled = false;
+      submitButton.textContent = "Aggiungi posto";
       return;
     }
 
